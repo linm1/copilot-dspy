@@ -163,19 +163,20 @@ class CopilotTokenManager:
         """Return True if the stored OAuth token has more than 5 minutes remaining."""
         raw = token_data.get("expires_at")
         if not raw:
-            return False
+            return True  # No expiry set — treat as valid; 401 will force refresh
         try:
             expires_at = datetime.fromisoformat(raw)
         except ValueError:
-            return False
+            return True  # Unparseable — treat as valid
         return datetime.now() < (expires_at - timedelta(minutes=5))
 
     def _acquire_or_refresh_token(self) -> str:
         """Try refresh token first; fall back to device flow."""
         token_data = self._load_cached_token()
-        if token_data and "refresh_token" in token_data:
+        refresh_token = token_data.get("refresh_token") if token_data else None
+        if refresh_token:
             try:
-                return self._refresh_token(token_data["refresh_token"])
+                return self._refresh_token(refresh_token)
             except Exception as e:
                 logger.warning("Token refresh failed: %s — falling back to device flow", e)
         return self._device_flow_auth()
@@ -194,12 +195,14 @@ class CopilotTokenManager:
         user_code = device_response["user_code"]
         verification_uri = device_response["verification_uri"]
 
-        logger.info(
-            "\n%s\nAuthenticate with GitHub Copilot:\n\n"
-            "1. Visit: %s\n"
-            "2. Enter code: %s\n"
-            "3. Authorize the application\n%s\n",
-            "=" * 60, verification_uri, user_code, "=" * 60,
+        print(
+            f"\n{'=' * 60}\n"
+            f"Authenticate with GitHub Copilot:\n\n"
+            f"1. Visit: {verification_uri}\n"
+            f"2. Enter code: {user_code}\n"
+            f"3. Authorize the application\n"
+            f"{'=' * 60}\n",
+            flush=True,
         )
 
         interval = device_response.get("interval", 5)
