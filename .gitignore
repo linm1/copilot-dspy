@@ -1,3 +1,10 @@
 .env
 *.pyc
 __pycache__/
+.pytest_cache/
+.venv/
+*.egg-info/
+dist/
+.coverage
+htmlcov/
+CLAUDE.md
