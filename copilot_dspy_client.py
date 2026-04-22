@@ -160,7 +160,13 @@ class CopilotTokenManager:
             return None
 
     def _is_token_valid(self, token_data: Dict[str, Any]) -> bool:
-        """Return True if the stored OAuth token has more than 5 minutes remaining."""
+        """Return True if the token is considered usable.
+
+        Tokens with a parseable ``expires_at`` must have more than 5 minutes
+        remaining. Tokens without an expiry field (e.g. ``ghu_*`` device-flow
+        tokens from some GitHub responses) are treated as valid; the API will
+        return 401 if they are actually stale, triggering a forced refresh.
+        """
         raw = token_data.get("expires_at")
         if not raw:
             return True  # No expiry set — treat as valid; 401 will force refresh
