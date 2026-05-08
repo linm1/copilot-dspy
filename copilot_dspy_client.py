@@ -418,7 +418,14 @@ class CopilotLM(BaseLM):
             messages = [{"role": "user", "content": prompt}] if prompt else []
 
         request_body = self._build_request(messages, **kwargs)
-        raw = await asyncio.to_thread(self._make_request, request_body)
+
+        # Create a dedicated session for this call so concurrent aforward()
+        # invocations do not share state through the singleton self._http session.
+        def _run(body: Dict[str, Any]) -> Dict[str, Any]:
+            with _make_retry_session() as per_call_session:
+                return self._make_request(body, session=per_call_session)
+
+        raw = await asyncio.to_thread(_run, request_body)
 
         usage = raw.get("usage", {})
         with self._metrics_lock:
@@ -503,8 +510,21 @@ class CopilotLM(BaseLM):
             "top_p": kwargs.get("top_p", self.top_p),
         }
 
-    def _make_request(self, request_body: Dict[str, Any]) -> Dict[str, Any]:
-        """POST to the Copilot chat completions endpoint with retry and token refresh."""
+    def _make_request(
+        self,
+        request_body: Dict[str, Any],
+        session: Optional[requests.Session] = None,
+    ) -> Dict[str, Any]:
+        """POST to the Copilot chat completions endpoint with retry and token refresh.
+
+        Args:
+            request_body: The JSON body to POST.
+            session: Optional requests.Session to use.  Pass a dedicated
+                per-call session when calling from a thread pool to avoid
+                concurrent access to the shared ``self._http`` session.
+                Defaults to ``self._http`` for the synchronous code path.
+        """
+        http = session if session is not None else self._http
         token = self.token_manager.get_token()
         url = f"{self.COPILOT_API_BASE}/chat/completions"
 
@@ -516,7 +536,7 @@ class CopilotLM(BaseLM):
                 **VS_CODE_HEADERS,
             }
             try:
-                response = self._http.post(
+                response = http.post(
                     url,
                     json=request_body,
                     headers=headers,
