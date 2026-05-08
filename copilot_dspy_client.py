@@ -408,11 +408,10 @@ class CopilotLM(BaseLM):
         messages: Optional[List[Dict[str, str]]] = None,
         **kwargs: Any,
     ) -> _CopilotResponse:
-        """Async forward pass — runs the blocking Copilot HTTP call in a thread pool.
+        """Async forward pass for DSPy's async LM interface.
 
-        DSPy 3.x ``BaseLM.acall`` requires this method.  We offload the
-        synchronous ``requests`` call to the default executor so the event loop
-        is not blocked.
+        This method offloads the synchronous ``requests`` call to the default
+        executor so the event loop is not blocked.
         """
         if messages is None:
             messages = [{"role": "user", "content": prompt}] if prompt else []
