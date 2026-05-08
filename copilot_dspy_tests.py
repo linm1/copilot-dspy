@@ -1,6 +1,10 @@
+import asyncio
+import copy
+import threading
 from datetime import datetime, timedelta
+from unittest.mock import patch
 
-from copilot_dspy_client import CopilotTokenManager
+from copilot_dspy_client import CopilotLM, CopilotTokenManager
 
 
 def test_acquire_or_refresh_token_skips_null_refresh_token(tmp_path):
@@ -58,3 +62,143 @@ def test_is_token_valid_returns_true_when_not_expired(tmp_path):
     manager = CopilotTokenManager(config_dir=str(tmp_path))
     future = (datetime.now() + timedelta(hours=1)).isoformat()
     assert manager._is_token_valid({"access_token": "ghu_abc", "expires_at": future}) is True
+
+
+# ---------------------------------------------------------------------------
+# Helpers shared by CopilotLM tests
+# ---------------------------------------------------------------------------
+
+def _make_lm(tmp_path):
+    """Create a CopilotLM whose token manager uses a tmp config dir."""
+    token_manager = CopilotTokenManager(config_dir=str(tmp_path))
+    token_manager._session_token = "fake-session-token"
+    token_manager._session_token_expires = datetime.now() + timedelta(hours=1)
+    return CopilotLM(model="gpt-4o", token_manager=token_manager)
+
+
+_FAKE_API_RESPONSE = {
+    "model": "gpt-4o",
+    "choices": [
+        {
+            "message": {"role": "assistant", "content": "Hello!"},
+            "logprobs": None,
+            "finish_reason": "stop",
+        }
+    ],
+    "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+}
+
+
+# ---------------------------------------------------------------------------
+# __deepcopy__ tests
+# ---------------------------------------------------------------------------
+
+def test_deepcopy_preserves_config(tmp_path):
+    lm = _make_lm(tmp_path)
+    lm.temperature = 0.3
+    lm.max_tokens = 512
+    lm.top_p = 0.9
+
+    lm_copy = copy.deepcopy(lm)
+
+    assert lm_copy.model == lm.model
+    assert lm_copy.temperature == lm.temperature
+    assert lm_copy.max_tokens == lm.max_tokens
+    assert lm_copy.top_p == lm.top_p
+
+
+def test_deepcopy_does_not_raise(tmp_path):
+    """deepcopy must not error on threading.Lock objects."""
+    lm = _make_lm(tmp_path)
+    copy.deepcopy(lm)  # should not raise
+
+
+def test_deepcopy_shares_token_manager(tmp_path):
+    """The copy should reuse the same token manager instance."""
+    lm = _make_lm(tmp_path)
+    lm_copy = copy.deepcopy(lm)
+    assert lm_copy.token_manager is lm.token_manager
+
+
+def test_deepcopy_memo_populated(tmp_path):
+    """deepcopy should register the new instance in the memo dict."""
+    lm = _make_lm(tmp_path)
+    memo = {}
+    lm_copy = lm.__deepcopy__(memo)
+    assert memo[id(lm)] is lm_copy
+
+
+# ---------------------------------------------------------------------------
+# aforward() tests
+# ---------------------------------------------------------------------------
+
+def test_aforward_returns_copilot_response_shape(tmp_path):
+    """aforward() must return an object whose attribute layout matches what
+    DSPy's BaseLM._process_completion accesses."""
+    lm = _make_lm(tmp_path)
+
+    with patch.object(lm, "_make_request", return_value=_FAKE_API_RESPONSE):
+        response = asyncio.run(lm.aforward(prompt="Hi"))
+
+    # DSPy accesses response.choices[i].message.content
+    assert len(response.choices) == 1
+    choice = response.choices[0]
+    assert choice.message.content == "Hello!"
+    assert choice.message.role == "assistant"
+    assert choice.logprobs is None
+    assert choice.finish_reason == "stop"
+    # DSPy also reads response.model and response._hidden_params
+    assert response.model == "gpt-4o"
+    assert hasattr(response, "_hidden_params")
+
+
+def test_aforward_updates_metrics(tmp_path):
+    """aforward() must increment request_count and token counters."""
+    lm = _make_lm(tmp_path)
+
+    with patch.object(lm, "_make_request", return_value=_FAKE_API_RESPONSE):
+        asyncio.run(lm.aforward(prompt="Hi"))
+
+    usage = lm.get_usage()
+    assert usage["requests"] == 1
+    assert usage["input_tokens"] == 10
+    assert usage["output_tokens"] == 5
+
+
+def test_aforward_with_messages(tmp_path):
+    """aforward() should accept an explicit messages list."""
+    lm = _make_lm(tmp_path)
+    messages = [{"role": "user", "content": "What is 2+2?"}]
+
+    with patch.object(lm, "_make_request", return_value=_FAKE_API_RESPONSE) as mock_req:
+        asyncio.run(lm.aforward(messages=messages))
+
+    called_body = mock_req.call_args[0][0]
+    assert called_body["messages"] == messages
+
+
+def test_aforward_concurrent_calls_do_not_share_session(tmp_path):
+    """Concurrent aforward() invocations must each use their own HTTP session."""
+    lm = _make_lm(tmp_path)
+    sessions_seen = []
+    # Barrier ensures both threads are alive (and holding their sessions)
+    # at the same time, so we can compare actual object identity.
+    barrier = threading.Barrier(2)
+
+    def capturing_make_request(self, body, session=None):
+        sessions_seen.append(session)
+        barrier.wait()  # hold until both threads have recorded their session
+        return _FAKE_API_RESPONSE
+
+    async def run_concurrent():
+        with patch.object(CopilotLM, "_make_request", capturing_make_request):
+            await asyncio.gather(
+                lm.aforward(prompt="first"),
+                lm.aforward(prompt="second"),
+            )
+
+    asyncio.run(run_concurrent())
+
+    # Each call must have used a distinct session object
+    assert len(sessions_seen) == 2
+    assert sessions_seen[0] is not sessions_seen[1]

@@ -21,6 +21,7 @@ Auth:
     subsequent runs.
 """
 
+import asyncio
 import os
 import json
 import time
@@ -318,6 +319,35 @@ class CopilotLMCache:
         return hashlib.md5(content.encode()).hexdigest()
 
 
+class _CopilotResponse:
+    """Attribute-access wrapper around a raw Copilot API response dict.
+
+    DSPy's ``BaseLM._process_completion`` uses attribute access
+    (``response.choices[i].message.content``) rather than dict-key access, so
+    we wrap the raw JSON dict returned by ``_make_request`` before handing it
+    to ``BaseLM.acall``.
+    """
+
+    class _Message:
+        def __init__(self, d: Dict[str, Any]) -> None:
+            self.content = d.get("content", "")
+            self.role = d.get("role", "assistant")
+            self.tool_calls = d.get("tool_calls")
+            self.reasoning_content = d.get("reasoning_content")
+
+    class _Choice:
+        def __init__(self, d: Dict[str, Any]) -> None:
+            self.message = _CopilotResponse._Message(d.get("message", {}))
+            self.logprobs = d.get("logprobs")
+            self.finish_reason = d.get("finish_reason")
+
+    def __init__(self, d: Dict[str, Any]) -> None:
+        self.choices = [_CopilotResponse._Choice(c) for c in d.get("choices", [])]
+        self.model = d.get("model", "")
+        self.usage = d.get("usage", {})  # kept as dict so dict() cast in BaseLM works
+        self._hidden_params: Dict[str, Any] = {}
+
+
 class CopilotLM(BaseLM):
     """
     DSPy BaseLM implementation backed by the GitHub Copilot Chat API.
@@ -372,6 +402,60 @@ class CopilotLM(BaseLM):
         self.total_output_tokens = 0
         logger.info("Initialized CopilotLM with model=%s", model)
 
+    async def aforward(
+        self,
+        prompt: Optional[str] = None,
+        messages: Optional[List[Dict[str, str]]] = None,
+        **kwargs: Any,
+    ) -> _CopilotResponse:
+        """Async forward pass for DSPy's async LM interface.
+
+        This method offloads the synchronous ``requests`` call to the default
+        executor so the event loop is not blocked.
+        """
+        if messages is None:
+            messages = [{"role": "user", "content": prompt}] if prompt else []
+
+        request_body = self._build_request(messages, **kwargs)
+
+        # Create a dedicated session for this call so concurrent aforward()
+        # invocations do not share state through the singleton self._http session.
+        def _run(body: Dict[str, Any]) -> Dict[str, Any]:
+            with _make_retry_session() as per_call_session:
+                return self._make_request(body, session=per_call_session)
+
+        raw = await asyncio.to_thread(_run, request_body)
+
+        usage = raw.get("usage", {})
+        with self._metrics_lock:
+            self.request_count += 1
+            self.total_input_tokens += usage.get("prompt_tokens", 0)
+            self.total_output_tokens += usage.get("completion_tokens", 0)
+
+        return _CopilotResponse(raw)
+
+    def __deepcopy__(self, memo: dict) -> "CopilotLM":
+        """Return a fresh CopilotLM with the same config.
+
+        ``copy.deepcopy`` cannot pickle ``threading.Lock`` objects held by this
+        class and its nested ``CopilotTokenManager``.  DSPy's ``BaseLM.copy()``
+        calls ``deepcopy``, so we override it to reconstruct a clean instance
+        that reuses the on-disk token cache instead.
+        """
+        new = CopilotLM(
+            model=self.model,
+            cache_ttl=self.cache.ttl,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+            top_p=self.top_p,
+            token_manager=self.token_manager,
+        )
+        # Share the token manager so all copies authenticate only once and
+        # reuse the same in-memory token state (avoids parallel device-flow
+        # prompts when PredictRLM deep-copies the LM on init).
+        memo[id(self)] = new
+        return new
+
     def forward(self, prompt: str, **kwargs: Any) -> str:
         """Send a plain-text prompt; return the first completion as a string."""
         outputs = self.__call__(messages=[{"role": "user", "content": prompt}], **kwargs)
@@ -425,8 +509,21 @@ class CopilotLM(BaseLM):
             "top_p": kwargs.get("top_p", self.top_p),
         }
 
-    def _make_request(self, request_body: Dict[str, Any]) -> Dict[str, Any]:
-        """POST to the Copilot chat completions endpoint with retry and token refresh."""
+    def _make_request(
+        self,
+        request_body: Dict[str, Any],
+        session: Optional[requests.Session] = None,
+    ) -> Dict[str, Any]:
+        """POST to the Copilot chat completions endpoint with retry and token refresh.
+
+        Args:
+            request_body: The JSON body to POST.
+            session: Optional requests.Session to use.  Pass a dedicated
+                per-call session when calling from a thread pool to avoid
+                concurrent access to the shared ``self._http`` session.
+                Defaults to ``self._http`` for the synchronous code path.
+        """
+        http = session if session is not None else self._http
         token = self.token_manager.get_token()
         url = f"{self.COPILOT_API_BASE}/chat/completions"
 
@@ -438,7 +535,7 @@ class CopilotLM(BaseLM):
                 **VS_CODE_HEADERS,
             }
             try:
-                response = self._http.post(
+                response = http.post(
                     url,
                     json=request_body,
                     headers=headers,
