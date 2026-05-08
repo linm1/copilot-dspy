@@ -448,11 +448,11 @@ class CopilotLM(BaseLM):
             temperature=self.temperature,
             max_tokens=self.max_tokens,
             top_p=self.top_p,
+            token_manager=self.token_manager,
         )
         # Share the token manager so all copies authenticate only once and
         # reuse the same in-memory token state (avoids parallel device-flow
         # prompts when PredictRLM deep-copies the LM on init).
-        new.token_manager = self.token_manager
         memo[id(self)] = new
         return new
 
