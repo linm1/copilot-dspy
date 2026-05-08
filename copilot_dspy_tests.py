@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import threading
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
@@ -180,9 +181,13 @@ def test_aforward_concurrent_calls_do_not_share_session(tmp_path):
     """Concurrent aforward() invocations must each use their own HTTP session."""
     lm = _make_lm(tmp_path)
     sessions_seen = []
+    # Barrier ensures both threads are alive (and holding their sessions)
+    # at the same time, so we can compare actual object identity.
+    barrier = threading.Barrier(2)
 
     def capturing_make_request(self, body, session=None):
-        sessions_seen.append(id(session))
+        sessions_seen.append(session)
+        barrier.wait()  # hold until both threads have recorded their session
         return _FAKE_API_RESPONSE
 
     async def run_concurrent():
@@ -196,4 +201,4 @@ def test_aforward_concurrent_calls_do_not_share_session(tmp_path):
 
     # Each call must have used a distinct session object
     assert len(sessions_seen) == 2
-    assert sessions_seen[0] != sessions_seen[1]
+    assert sessions_seen[0] is not sessions_seen[1]

@@ -236,7 +236,24 @@ Verified via `GET https://api.githubcopilot.com/models` (May 2026). Availability
 | `oswe-vscode-prime` | Raptor mini (Preview) |
 | `text-embedding-3-small` | Embedding V3 small |
 
-To refresh this list, update the model table in this README using the repository's current model-discovery workflow. The previously documented command referenced a script path that does not exist in this repository.
+To refresh this list, run the following command (requires a valid token — first run triggers device-flow auth):
+
+```bash
+python -c "
+from copilot_dspy_client import CopilotTokenManager, VS_CODE_HEADERS
+import requests
+
+mgr = CopilotTokenManager()
+token = mgr.get_token()
+resp = requests.get(
+    'https://api.githubcopilot.com/models',
+    headers={'Authorization': f'Bearer {token}', **VS_CODE_HEADERS},
+)
+resp.raise_for_status()
+for m in resp.json().get('data', []):
+    print(f\"| \`{m['id']}\` | {m.get('name', m['id'])} |\")
+"
+```
 
 ---
 
