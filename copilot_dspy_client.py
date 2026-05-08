@@ -416,6 +416,12 @@ class CopilotLM(BaseLM):
         if messages is None:
             messages = [{"role": "user", "content": prompt}] if prompt else []
 
+        cache_key = self.cache.make_key(messages, **kwargs)
+        cached = self.cache.get(cache_key)
+        if cached is not None:
+            logger.debug("Cache hit (async)")
+            return cached
+
         request_body = self._build_request(messages, **kwargs)
 
         # Create a dedicated session for this call so concurrent aforward()
@@ -432,7 +438,9 @@ class CopilotLM(BaseLM):
             self.total_input_tokens += usage.get("prompt_tokens", 0)
             self.total_output_tokens += usage.get("completion_tokens", 0)
 
-        return _CopilotResponse(raw)
+        response = _CopilotResponse(raw)
+        self.cache.set(cache_key, response)
+        return response
 
     def __deepcopy__(self, memo: dict) -> "CopilotLM":
         """Return a fresh CopilotLM with the same config.
