@@ -236,7 +236,7 @@ Verified via `GET https://api.githubcopilot.com/models` (May 2026). Availability
 | `oswe-vscode-prime` | Raptor mini (Preview) |
 | `text-embedding-3-small` | Embedding V3 small |
 
-To refresh this list: `uv run python examples/sdtm_domain_generator/check_models.py`
+To refresh this list, update the model table in this README using the repository's current model-discovery workflow. The previously documented command referenced a script path that does not exist in this repository.
 
 ---
 
