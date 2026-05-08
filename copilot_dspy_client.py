@@ -418,8 +418,7 @@ class CopilotLM(BaseLM):
             messages = [{"role": "user", "content": prompt}] if prompt else []
 
         request_body = self._build_request(messages, **kwargs)
-        loop = asyncio.get_event_loop()
-        raw = await loop.run_in_executor(None, lambda: self._make_request(request_body))
+        raw = await asyncio.to_thread(self._make_request, request_body)
 
         usage = raw.get("usage", {})
         with self._metrics_lock:
