@@ -181,12 +181,64 @@ CopilotLM(
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `model` | str | `"gpt-4o"` | Model name (gpt-4o, claude-3-sonnet, etc.) |
+| `model` | str | `"gpt-4o"` | Model ID string — see Available Models below |
 | `cache_ttl` | int | 3600 | Cache time-to-live in seconds |
 | `temperature` | float | 0.7 | Sampling temperature (0.0-2.0) |
 | `max_tokens` | int | 2048 | Maximum response tokens |
 | `top_p` | float | 1.0 | Nucleus sampling parameter |
 | `token_manager` | CopilotTokenManager | None | Custom token manager |
+
+#### Available Models
+
+Verified via `GET https://api.githubcopilot.com/models` (May 2026). Availability depends on your Copilot plan.
+
+**OpenAI**
+
+| Model ID | Name |
+|----------|------|
+| `gpt-5.5` | GPT-5.5 |
+| `gpt-5.4` | GPT-5.4 |
+| `gpt-5.4-mini` | GPT-5.4 mini |
+| `gpt-5.3-codex` | GPT-5.3-Codex |
+| `gpt-5.2-codex` | GPT-5.2-Codex |
+| `gpt-5.2` | GPT-5.2 |
+| `gpt-5-mini` | GPT-5 mini |
+| `gpt-4.1-2025-04-14` | GPT-4.1 |
+| `gpt-4o-2024-11-20` | GPT-4o |
+| `gpt-4o-2024-08-06` | GPT-4o |
+| `gpt-4o-mini-2024-07-18` | GPT-4o mini |
+| `gpt-4-0613` | GPT-4 |
+| `gpt-3.5-turbo-0613` | GPT-3.5 Turbo |
+
+**Anthropic**
+
+| Model ID | Name |
+|----------|------|
+| `claude-opus-4.7` | Claude Opus 4.7 |
+| `claude-sonnet-4.6` | Claude Sonnet 4.6 |
+| `claude-sonnet-4.5` | Claude Sonnet 4.5 |
+| `claude-opus-4.5` | Claude Opus 4.5 |
+| `claude-haiku-4.5` | Claude Haiku 4.5 |
+
+**Google**
+
+| Model ID | Name |
+|----------|------|
+| `gemini-3.1-pro-preview` | Gemini 3.1 Pro |
+| `gemini-3-flash-preview` | Gemini 3 Flash (Preview) |
+| `gemini-2.5-pro` | Gemini 2.5 Pro |
+
+**Other**
+
+| Model ID | Name |
+|----------|------|
+| `grok-code-fast-1` | Grok Code Fast 1 |
+| `oswe-vscode-prime` | Raptor mini (Preview) |
+| `text-embedding-3-small` | Embedding V3 small |
+
+To refresh this list: `uv run python examples/sdtm_domain_generator/check_models.py`
+
+---
 
 #### Methods
 
