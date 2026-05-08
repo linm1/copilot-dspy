@@ -416,13 +416,18 @@ class CopilotLM(BaseLM):
         if messages is None:
             messages = [{"role": "user", "content": prompt}] if prompt else []
 
-        cache_key = self.cache.make_key(messages, **kwargs)
+        request_body = self._build_request(messages, **kwargs)
+        cache_key = self.cache.make_key(
+            request_body.get("messages", messages),
+            model=request_body.get("model"),
+            temperature=request_body.get("temperature"),
+            max_tokens=request_body.get("max_tokens"),
+            top_p=request_body.get("top_p"),
+        )
         cached = self.cache.get(cache_key)
         if cached is not None:
             logger.debug("Cache hit (async)")
             return cached
-
-        request_body = self._build_request(messages, **kwargs)
 
         # Create a dedicated session for this call so concurrent aforward()
         # invocations do not share state through the singleton self._http session.
