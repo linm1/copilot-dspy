@@ -314,9 +314,9 @@ class CopilotLMCache:
         with self._lock:
             self._cache[key] = (value, time.time())
 
-    def make_key(self, messages: List[Dict[str, str]], **kwargs: Any) -> str:
-        content = json.dumps(messages, sort_keys=True) + json.dumps(kwargs, sort_keys=True)
-        return hashlib.md5(content.encode()).hexdigest()
+    def make_key(self, request_body: Dict[str, Any]) -> str:
+        content = json.dumps(request_body, sort_keys=True)
+        return hashlib.sha256(content.encode()).hexdigest()
 
 
 class _CopilotResponse:
@@ -417,6 +417,11 @@ class CopilotLM(BaseLM):
             messages = [{"role": "user", "content": prompt}] if prompt else []
 
         request_body = self._build_request(messages, **kwargs)
+        cache_key = self.cache.make_key(request_body)
+        cached = self.cache.get(cache_key)
+        if cached is not None:
+            logger.debug("Cache hit (async)")
+            return _CopilotResponse(cached)
 
         # Create a dedicated session for this call so concurrent aforward()
         # invocations do not share state through the singleton self._http session.
@@ -432,6 +437,7 @@ class CopilotLM(BaseLM):
             self.total_input_tokens += usage.get("prompt_tokens", 0)
             self.total_output_tokens += usage.get("completion_tokens", 0)
 
+        self.cache.set(cache_key, raw)
         return _CopilotResponse(raw)
 
     def __deepcopy__(self, memo: dict) -> "CopilotLM":
@@ -478,13 +484,16 @@ class CopilotLM(BaseLM):
         if messages is None:
             messages = [{"role": "user", "content": prompt}] if prompt else []
 
-        cache_key = self.cache.make_key(messages, **kwargs)
+        request_body = self._build_request(messages, **kwargs)
+        cache_key = self.cache.make_key(request_body)
         cached = self.cache.get(cache_key)
         if cached is not None:
             logger.debug("Cache hit")
-            return cached
+            return [
+                {"text": choice["message"]["content"], "logprobs": choice.get("logprobs")}
+                for choice in cached.get("choices", [])
+            ]
 
-        request_body = self._build_request(messages, **kwargs)
         response = self._make_request(request_body)
 
         usage = response.get("usage", {})
@@ -493,12 +502,11 @@ class CopilotLM(BaseLM):
             self.total_input_tokens += usage.get("prompt_tokens", 0)
             self.total_output_tokens += usage.get("completion_tokens", 0)
 
-        outputs = [
+        self.cache.set(cache_key, response)
+        return [
             {"text": choice["message"]["content"], "logprobs": choice.get("logprobs")}
             for choice in response.get("choices", [])
         ]
-        self.cache.set(cache_key, outputs)
-        return outputs
 
     def _build_request(self, messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:
         return {
