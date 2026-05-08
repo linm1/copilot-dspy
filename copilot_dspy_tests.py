@@ -208,18 +208,13 @@ def test_aforward_cache_hit_skips_make_request(tmp_path):
     """Second aforward() call with the same inputs should return a cached _CopilotResponse
     without invoking _make_request again."""
     lm = _make_lm(tmp_path)
-    call_count = []
 
-    def counting_make_request(body, session=None):
-        call_count.append(1)
-        return _FAKE_API_RESPONSE
-
-    with patch.object(lm, "_make_request", side_effect=counting_make_request):
+    with patch.object(lm, "_make_request", return_value=_FAKE_API_RESPONSE) as mock_req:
         first = asyncio.run(lm.aforward(prompt="cached prompt"))
         second = asyncio.run(lm.aforward(prompt="cached prompt"))
 
     # _make_request must only be called once
-    assert len(call_count) == 1
+    assert mock_req.call_count == 1
     # Both calls must return a valid _CopilotResponse
     assert second.choices[0].message.content == "Hello!"
     assert second.model == "gpt-4o"
@@ -228,20 +223,14 @@ def test_aforward_cache_hit_skips_make_request(tmp_path):
 def test_aforward_and_call_share_cache(tmp_path):
     """__call__() and aforward() with the same logical request should share the cache entry."""
     lm = _make_lm(tmp_path)
-    call_count = []
-
-    def counting_make_request(body, session=None):
-        call_count.append(1)
-        return _FAKE_API_RESPONSE
-
     messages = [{"role": "user", "content": "shared prompt"}]
 
-    with patch.object(lm, "_make_request", side_effect=counting_make_request):
+    with patch.object(lm, "_make_request", return_value=_FAKE_API_RESPONSE) as mock_req:
         # First call via __call__() populates the cache
         lm(messages=messages)
         # Second call via aforward() should hit the cache
         response = asyncio.run(lm.aforward(messages=messages))
 
     # _make_request must only be called once across both methods
-    assert len(call_count) == 1
+    assert mock_req.call_count == 1
     assert response.choices[0].message.content == "Hello!"

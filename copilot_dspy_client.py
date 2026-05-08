@@ -316,7 +316,7 @@ class CopilotLMCache:
 
     def make_key(self, request_body: Dict[str, Any]) -> str:
         content = json.dumps(request_body, sort_keys=True)
-        return hashlib.md5(content.encode()).hexdigest()
+        return hashlib.sha256(content.encode()).hexdigest()
 
 
 class _CopilotResponse:
