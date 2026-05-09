@@ -4,7 +4,36 @@ import threading
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
-from copilot_dspy_client import CopilotLM, CopilotTokenManager
+from copilot_dspy_client import CopilotLM, CopilotTokenManager, uses_max_completion_tokens
+
+
+# ---------------------------------------------------------------------------
+# Helpers shared by CopilotLM tests
+# ---------------------------------------------------------------------------
+
+def _make_stub_token_manager(tmp_path):
+    return CopilotTokenManager(config_dir=str(tmp_path))
+
+
+def _make_lm(tmp_path):
+    """Create a CopilotLM whose token manager uses a tmp config dir."""
+    token_manager = CopilotTokenManager(config_dir=str(tmp_path))
+    token_manager._session_token = "fake-session-token"
+    token_manager._session_token_expires = datetime.now() + timedelta(hours=1)
+    return CopilotLM(model="gpt-4o", token_manager=token_manager)
+
+
+_FAKE_API_RESPONSE = {
+    "model": "gpt-4o",
+    "choices": [
+        {
+            "message": {"role": "assistant", "content": "Hello!"},
+            "logprobs": None,
+            "finish_reason": "stop",
+        }
+    ],
+    "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+}
 
 
 def test_acquire_or_refresh_token_skips_null_refresh_token(tmp_path):
@@ -62,31 +91,6 @@ def test_is_token_valid_returns_true_when_not_expired(tmp_path):
     manager = CopilotTokenManager(config_dir=str(tmp_path))
     future = (datetime.now() + timedelta(hours=1)).isoformat()
     assert manager._is_token_valid({"access_token": "ghu_abc", "expires_at": future}) is True
-
-
-# ---------------------------------------------------------------------------
-# Helpers shared by CopilotLM tests
-# ---------------------------------------------------------------------------
-
-def _make_lm(tmp_path):
-    """Create a CopilotLM whose token manager uses a tmp config dir."""
-    token_manager = CopilotTokenManager(config_dir=str(tmp_path))
-    token_manager._session_token = "fake-session-token"
-    token_manager._session_token_expires = datetime.now() + timedelta(hours=1)
-    return CopilotLM(model="gpt-4o", token_manager=token_manager)
-
-
-_FAKE_API_RESPONSE = {
-    "model": "gpt-4o",
-    "choices": [
-        {
-            "message": {"role": "assistant", "content": "Hello!"},
-            "logprobs": None,
-            "finish_reason": "stop",
-        }
-    ],
-    "usage": {"prompt_tokens": 10, "completion_tokens": 5},
-}
 
 
 # ---------------------------------------------------------------------------
@@ -234,3 +238,40 @@ def test_aforward_and_call_share_cache(tmp_path):
     # _make_request must only be called once across both methods
     assert mock_req.call_count == 1
     assert response.choices[0].message.content == "Hello!"
+
+
+# ---------------------------------------------------------------------------
+# uses_max_completion_tokens + _build_request tests
+# ---------------------------------------------------------------------------
+
+def test_uses_max_completion_tokens_for_gpt5_models():
+    assert uses_max_completion_tokens("gpt-5") is True
+    assert uses_max_completion_tokens("gpt-5.4") is True
+    assert uses_max_completion_tokens("gpt-5-mini") is True
+
+
+def test_uses_max_completion_tokens_is_false_for_gpt4_models():
+    assert uses_max_completion_tokens("gpt-4o") is False
+    assert uses_max_completion_tokens("gpt-4o-mini") is False
+    assert uses_max_completion_tokens("gpt-50") is False  # must not match gpt-5 prefix
+
+
+def test_build_request_uses_max_completion_tokens_for_gpt5_models(tmp_path):
+    lm = CopilotLM(model="gpt-5.4", token_manager=_make_stub_token_manager(tmp_path))
+    request = lm._build_request([{"role": "user", "content": "hi"}])
+    assert "max_completion_tokens" in request
+    assert "max_tokens" not in request
+
+
+def test_build_request_uses_max_tokens_for_gpt4_models(tmp_path):
+    lm = CopilotLM(model="gpt-4o", token_manager=_make_stub_token_manager(tmp_path))
+    request = lm._build_request([{"role": "user", "content": "hi"}])
+    assert "max_tokens" in request
+    assert "max_completion_tokens" not in request
+
+
+def test_build_request_preserves_temperature_and_top_p(tmp_path):
+    lm = CopilotLM(model="gpt-4o", temperature=0.3, top_p=0.9, token_manager=_make_stub_token_manager(tmp_path))
+    request = lm._build_request([{"role": "user", "content": "hi"}], temperature=0.5)
+    assert request["temperature"] == 0.5   # kwarg override
+    assert request["top_p"] == 0.9         # instance default

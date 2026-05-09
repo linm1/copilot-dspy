@@ -52,6 +52,11 @@ VS_CODE_HEADERS: Dict[str, str] = {
 }
 
 
+def uses_max_completion_tokens(model: str) -> bool:
+    """GPT-5 family rejects `max_tokens`; needs `max_completion_tokens`."""
+    return model == "gpt-5" or model.startswith("gpt-5.") or model.startswith("gpt-5-")
+
+
 def _make_retry_session() -> requests.Session:
     """Create a requests.Session with automatic retry on transient errors."""
     session = requests.Session()
@@ -509,13 +514,18 @@ class CopilotLM(BaseLM):
         ]
 
     def _build_request(self, messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:
-        return {
+        request: Dict[str, Any] = {
             "model": self.model,
             "messages": messages,
             "temperature": kwargs.get("temperature", self.temperature),
-            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
             "top_p": kwargs.get("top_p", self.top_p),
         }
+        max_tokens = kwargs.get("max_tokens", self.max_tokens)
+        if uses_max_completion_tokens(self.model):
+            request["max_completion_tokens"] = max_tokens
+        else:
+            request["max_tokens"] = max_tokens
+        return request
 
     def _make_request(
         self,
