@@ -248,6 +248,7 @@ def test_uses_max_completion_tokens_for_gpt5_models():
     assert uses_max_completion_tokens("gpt-5") is True
     assert uses_max_completion_tokens("gpt-5.4") is True
     assert uses_max_completion_tokens("gpt-5-mini") is True
+    assert uses_max_completion_tokens("gpt-5o") is True
 
 
 def test_uses_max_completion_tokens_is_false_for_gpt4_models():

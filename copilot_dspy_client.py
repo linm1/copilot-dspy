@@ -24,6 +24,7 @@ Auth:
 import asyncio
 import os
 import json
+import re
 import time
 import logging
 from typing import Optional, Any, Dict, List, Tuple
@@ -41,6 +42,8 @@ from dspy.clients.base_lm import BaseLM
 
 logger = logging.getLogger(__name__)
 
+_GPT5_RE = re.compile(r"^gpt-5(?:[.\-o]|$)")
+
 # Identity headers required by the Copilot API gateway on every request.
 # These identify this client as VS Code — the only client type GitHub
 # currently authorises for third-party Copilot API access.
@@ -54,7 +57,7 @@ VS_CODE_HEADERS: Dict[str, str] = {
 
 def uses_max_completion_tokens(model: str) -> bool:
     """GPT-5 family rejects `max_tokens`; needs `max_completion_tokens`."""
-    return model == "gpt-5" or model.startswith("gpt-5.") or model.startswith("gpt-5-")
+    return bool(_GPT5_RE.match(model))
 
 
 def _make_retry_session() -> requests.Session:
