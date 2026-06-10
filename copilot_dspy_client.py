@@ -429,7 +429,9 @@ class CopilotLM(BaseLM):
         cached = self.cache.get(cache_key)
         if cached is not None:
             logger.debug("Cache hit (async)")
-            return _CopilotResponse(cached)
+            resp = _CopilotResponse(cached)
+            resp.cache_hit = True  # signals dspy usage_tracker to skip counting (getattr check in lm.py)
+            return resp
 
         # Create a dedicated session for this call so concurrent aforward()
         # invocations do not share state through the singleton self._http session.
@@ -491,7 +493,9 @@ class CopilotLM(BaseLM):
         cached = self.cache.get(cache_key)
         if cached is not None:
             logger.debug("Cache hit")
-            return _CopilotResponse(cached)
+            resp = _CopilotResponse(cached)
+            resp.cache_hit = True  # signals dspy usage_tracker to skip counting (getattr check in lm.py)
+            return resp
 
         response = self._make_request(request_body)
 
