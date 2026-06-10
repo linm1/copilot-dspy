@@ -470,24 +470,18 @@ class CopilotLM(BaseLM):
         memo[id(self)] = new
         return new
 
-    def forward(self, prompt: str, **kwargs: Any) -> str:
-        """Send a plain-text prompt; return the first completion as a string."""
-        outputs = self.__call__(messages=[{"role": "user", "content": prompt}], **kwargs)
-        if not outputs:
-            raise RuntimeError("Copilot API returned no choices")
-        return outputs[0]["text"]
-
-    def __call__(
+    def forward(
         self,
         prompt: Optional[str] = None,
         messages: Optional[List[Dict[str, str]]] = None,
         **kwargs: Any,
-    ) -> List[Dict[str, Any]]:
-        """
-        Call the Copilot chat completions endpoint.
+    ) -> "_CopilotResponse":
+        """Sync forward pass — returns a ``_CopilotResponse`` so that the
+        inherited ``BaseLM.__call__`` can hand it to ``_process_lm_response``
+        (which writes ``self.history``, fires callbacks, and tracks cost).
 
-        Returns a list of ``{"text": <content>, "logprobs": ...}`` dicts —
-        one per choice — in the format DSPy adapters expect.
+        This method must NOT call ``self.__call__()`` — that would bypass the
+        inherited machinery and create an infinite-recursion trap.
         """
         if messages is None:
             messages = [{"role": "user", "content": prompt}] if prompt else []
@@ -497,10 +491,7 @@ class CopilotLM(BaseLM):
         cached = self.cache.get(cache_key)
         if cached is not None:
             logger.debug("Cache hit")
-            return [
-                {"text": choice["message"]["content"], "logprobs": choice.get("logprobs")}
-                for choice in cached.get("choices", [])
-            ]
+            return _CopilotResponse(cached)
 
         response = self._make_request(request_body)
 
@@ -511,10 +502,7 @@ class CopilotLM(BaseLM):
             self.total_output_tokens += usage.get("completion_tokens", 0)
 
         self.cache.set(cache_key, response)
-        return [
-            {"text": choice["message"]["content"], "logprobs": choice.get("logprobs")}
-            for choice in response.get("choices", [])
-        ]
+        return _CopilotResponse(response)
 
     def _build_request(self, messages: List[Dict[str, str]], **kwargs: Any) -> Dict[str, Any]:
         request: Dict[str, Any] = {
