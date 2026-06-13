@@ -25,7 +25,7 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 
 lm = CopilotLM(
-    model=os.getenv("COPILOT_MODEL", "gpt-4o"),
+    model=os.getenv("COPILOT_MODEL", "gpt-5-mini"),
     temperature=float(os.getenv("COPILOT_TEMPERATURE", "0.7")),
     max_tokens=int(os.getenv("COPILOT_MAX_TOKENS", "1024")),
     cache_ttl=int(os.getenv("COPILOT_CACHE_TTL", "3600")),
