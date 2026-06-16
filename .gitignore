@@ -8,5 +8,7 @@ dist/
 .coverage
 htmlcov/
 CLAUDE.md
+AGENTS.md
+DESIGN.md
 .vscode/
 pi-repo/
