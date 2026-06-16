@@ -23,6 +23,7 @@ Auth:
 
 import asyncio
 import os
+import re
 import json
 import re
 import time
@@ -30,6 +31,7 @@ import logging
 from typing import Optional, Any, Dict, List, Tuple
 from datetime import datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlparse
 import threading
 import hashlib
 
@@ -87,18 +89,79 @@ class CopilotTokenManager:
     substitute your own OAuth app here.
     """
 
-    DEVICE_CODE_URL = "https://github.com/login/device/code"
-    DEVICE_AUTH_URL = "https://github.com/login/oauth/access_token"
-    # Exchanges the OAuth ghu_* token for a short-lived Copilot session token.
-    COPILOT_TOKEN_URL = "https://api.github.com/copilot_internal/v2/token"
-
     _FALLBACK_CLIENT_ID = "Iv1.b507a08c87ecfe98"
     GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
 
-    def __init__(self, config_dir: Optional[str] = None):
+    @staticmethod
+    def _normalize_domain(raw: str) -> str:
+        """Normalise a user-supplied domain or URL to a bare, lowercased host.
+
+        Handles inputs like:
+          - ``"github.com"`` → ``"github.com"``
+          - ``"GitHub.com"`` → ``"github.com"`` (lowercased)
+          - ``"https://parexel.ghe.com/"`` → ``"parexel.ghe.com"``
+          - ``"//parexel.ghe.com"`` → ``"parexel.ghe.com"``
+
+        Ports are dropped consistently: ``urlparse(...).hostname`` strips any
+        ``:port`` suffix so the bare host and the derived URLs stay uniform.
+        Hosts are lowercased so the ``domain == "github.com"`` check and the
+        emitted URL hosts are case-consistent.
+        """
+        raw = raw.strip()
+        if not raw:
+            return raw
+        # Use urlparse with a synthetic scheme for scheme-less inputs so
+        # .hostname strips any port uniformly across both URL and bare forms.
+        if "://" in raw:
+            parsed = urlparse(raw)
+        else:
+            parsed = urlparse(f"//{raw.lstrip('/')}")
+        host = parsed.hostname
+        if host:
+            return host.lower()
+        # Fallback: strip leading slashes / trailing slash, then lowercase.
+        stripped = raw.lstrip("/").rstrip("/")
+        return stripped.lower()
+
+    def __init__(
+        self,
+        config_dir: Optional[str] = None,
+        enterprise_domain: Optional[str] = None,
+    ) -> None:
+        # Resolve domain by stripping each candidate first, then picking the
+        # first non-empty one. Stripping before the truthiness check avoids a
+        # whitespace-only value (truthy) collapsing to an empty host and
+        # producing https:///... URLs.
+        candidates = (
+            enterprise_domain,
+            os.environ.get("COPILOT_ENTERPRISE_DOMAIN"),
+            "github.com",
+        )
+        raw_domain = next(
+            (c.strip() for c in candidates if c and c.strip()),
+            "github.com",
+        )
+        self.domain: str = self._normalize_domain(raw_domain) or "github.com"
+
+        # Build instance-level URLs from the resolved domain.
+        self.device_code_url: str = f"https://{self.domain}/login/device/code"
+        self.device_auth_url: str = f"https://{self.domain}/login/oauth/access_token"
+        # Exchanges the OAuth ghu_* token for a short-lived Copilot session token.
+        self.copilot_token_url: str = (
+            f"https://api.{self.domain}/copilot_internal/v2/token"
+        )
+
         self.config_dir = Path(config_dir or Path.home() / ".config" / "copilot-dspy")
         self.config_dir.mkdir(parents=True, exist_ok=True)
-        self.token_file = self.config_dir / "token.json"
+        # Per-domain token cache — keep tokens for different hosts separate to
+        # avoid stale-token 401 loops when switching between github.com and GHE.
+        # The sanitized host is human-readable; the appended hash of the
+        # normalized domain guarantees distinct domains (e.g. "a:b.com" vs
+        # "a/b.com") never collide on the same cache file, including on
+        # case-insensitive filesystems.
+        safe_domain = re.sub(r"[^A-Za-z0-9.\-]", "_", self.domain)
+        domain_hash = hashlib.sha256(self.domain.encode()).hexdigest()[:8]
+        self.token_file = self.config_dir / f"token-{safe_domain}-{domain_hash}.json"
         self.lock = threading.Lock()
         self._token_cache: Optional[Dict[str, Any]] = None
         self.CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID", self._FALLBACK_CLIENT_ID)
@@ -140,7 +203,7 @@ class CopilotTokenManager:
     def _get_session_token(self, oauth_token: str) -> Tuple[str, float]:
         """Exchange an OAuth ghu_* token for a short-lived Copilot session token."""
         response = self._http.get(
-            self.COPILOT_TOKEN_URL,
+            self.copilot_token_url,
             headers={
                 "Accept": "application/json",
                 "Authorization": f"Bearer {oauth_token}",
@@ -199,7 +262,7 @@ class CopilotTokenManager:
     def _device_flow_auth(self) -> str:
         """Run GitHub OAuth device flow and return the new ghu_* access token."""
         response = self._http.post(
-            self.DEVICE_CODE_URL,
+            self.device_code_url,
             data={"client_id": self.CLIENT_ID, "scope": "read:user"},
             headers={"Accept": "application/json"},
         )
@@ -224,7 +287,7 @@ class CopilotTokenManager:
         for _ in range(120):  # 10-minute window
             time.sleep(interval)
             resp = self._http.post(
-                self.DEVICE_AUTH_URL,
+                self.device_auth_url,
                 data={
                     "client_id": self.CLIENT_ID,
                     "device_code": device_code,
@@ -257,7 +320,7 @@ class CopilotTokenManager:
     def _refresh_token(self, refresh_token: str) -> str:
         """Attempt to renew the OAuth token using a stored refresh_token."""
         resp = self._http.post(
-            self.DEVICE_AUTH_URL,
+            self.device_auth_url,
             data={
                 "client_id": self.CLIENT_ID,
                 "grant_type": "refresh_token",
@@ -297,6 +360,70 @@ class CopilotTokenManager:
         except OSError:
             pass
         self._token_cache = token_data
+
+    @staticmethod
+    def _parse_proxy_ep(session_token: str) -> Optional[str]:
+        """Extract the ``proxy-ep`` host from a session token, or None.
+
+        The token is a ``;``-delimited list of ``key=value`` pairs. We split
+        on those exact separators (rather than a loose regex that could match
+        a substring elsewhere in the token) and return the value for the
+        ``proxy-ep`` key only.
+        """
+        for pair in session_token.split(";"):
+            key, sep, value = pair.partition("=")
+            if sep and key.strip() == "proxy-ep":
+                return value.strip()
+        return None
+
+    def _is_trusted_api_host(self, host: str) -> bool:
+        """Return True only for hosts we are willing to route chat traffic to.
+
+        Guards against an attacker-controlled token redirecting requests to an
+        arbitrary HTTPS host (SSRF). Accept the host only if it belongs to the
+        public Copilot domain or to the configured enterprise domain.
+        """
+        if not host:
+            return False
+        if host == "githubcopilot.com" or host.endswith(".githubcopilot.com"):
+            return True
+        if self.domain != "github.com" and (
+            host == self.domain or host.endswith(f".{self.domain}")
+        ):
+            return True
+        return False
+
+    def get_api_base(self) -> str:
+        """Return the Copilot chat API base URL for this domain.
+
+        Resolution order (mirrors pi-repo ``getGitHubCopilotBaseUrl``):
+        1. For the default ``github.com`` domain, always return the hardcoded
+           public endpoint — ``proxy-ep`` is intentionally NOT consulted so the
+           byte-for-byte default URL is preserved for backward compatibility.
+        2. For an enterprise domain, parse ``proxy-ep`` from the session token,
+           swap a leading ``proxy.`` for ``api.``, and use it ONLY if the host
+           passes trust validation (prevents SSRF via a hostile token).
+        3. Otherwise (no/invalid ``proxy-ep``) fall back to
+           ``https://copilot-api.<domain>``.
+        """
+        # Default github.com: hardcoded public endpoint, never trust proxy-ep.
+        if self.domain == "github.com":
+            return "https://api.githubcopilot.com"
+
+        # Ensure a session token is available to parse.
+        self.get_token()
+        if self._session_token:
+            proxy_host = self._parse_proxy_ep(self._session_token)
+            if proxy_host:
+                api_host = re.sub(r"^proxy\.", "api.", proxy_host, count=1)
+                if self._is_trusted_api_host(api_host):
+                    return f"https://{api_host}"
+                logger.warning(
+                    "Ignoring untrusted proxy-ep host %r — falling back to "
+                    "enterprise default",
+                    api_host,
+                )
+        return f"https://copilot-api.{self.domain}"
 
 
 class CopilotLMCache:
@@ -387,6 +514,7 @@ class CopilotLM(BaseLM):
         max_tokens: int = 2048,
         top_p: float = 1.0,
         token_manager: Optional[CopilotTokenManager] = None,
+        enterprise_domain: Optional[str] = None,
     ):
         """
         Args:
@@ -396,12 +524,18 @@ class CopilotLM(BaseLM):
             max_tokens: Maximum tokens in each response.
             top_p: Nucleus sampling parameter.
             token_manager: Optional custom token manager (default: new instance).
+            enterprise_domain: Override GHE host (e.g. ``"parexel.ghe.com"``).
+                Falls back to ``COPILOT_ENTERPRISE_DOMAIN`` env var, then
+                ``"github.com"``.
         """
         super().__init__(model=model)
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.top_p = top_p
-        self.token_manager = token_manager or CopilotTokenManager()
+        self._enterprise_domain = enterprise_domain
+        self.token_manager = token_manager or CopilotTokenManager(
+            enterprise_domain=enterprise_domain
+        )
         self.cache = CopilotLMCache(ttl_seconds=cache_ttl)
         self._http = _make_retry_session()
         self._metrics_lock = threading.Lock()
@@ -465,6 +599,7 @@ class CopilotLM(BaseLM):
             max_tokens=self.max_tokens,
             top_p=self.top_p,
             token_manager=self.token_manager,
+            enterprise_domain=self._enterprise_domain,
         )
         # Share the token manager so all copies authenticate only once and
         # reuse the same in-memory token state (avoids parallel device-flow
@@ -538,7 +673,8 @@ class CopilotLM(BaseLM):
         """
         http = session if session is not None else self._http
         token = self.token_manager.get_token()
-        url = f"{self.COPILOT_API_BASE}/chat/completions"
+        base = self.token_manager.get_api_base()
+        url = f"{base}/chat/completions"
 
         for attempt in range(3):
             headers = {

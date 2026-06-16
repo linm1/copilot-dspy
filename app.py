@@ -25,17 +25,18 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 
 lm = CopilotLM(
-    model=os.getenv("COPILOT_MODEL", "gpt-4o"),
+    model=os.getenv("COPILOT_MODEL", "gpt-5-mini"),
     temperature=float(os.getenv("COPILOT_TEMPERATURE", "0.7")),
     max_tokens=int(os.getenv("COPILOT_MAX_TOKENS", "1024")),
     cache_ttl=int(os.getenv("COPILOT_CACHE_TTL", "3600")),
+    enterprise_domain=os.getenv("COPILOT_ENTERPRISE_DOMAIN"),
 )
 
 dspy.configure(lm=lm)
 
 print("\n" + "=" * 60)
 print("DSPy configured with GitHub Copilot")
-print(f"  model   : {os.getenv('COPILOT_MODEL', 'gpt-4o')}")
+print(f"  model   : {os.getenv('COPILOT_MODEL', 'gpt-5-mini')}")
 print(f"  temp    : {os.getenv('COPILOT_TEMPERATURE', '0.7')}")
 print(f"  max_tok : {os.getenv('COPILOT_MAX_TOKENS', '1024')}")
 print("=" * 60 + "\n")
